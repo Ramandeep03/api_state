@@ -65,6 +65,7 @@ void main() {
         ApiSuccess(:final data) => 'success: $data',
         ApiFailure(:final error) => 'failure: ${error.message}',
         ApiRefresh(:final data) => 'refresh: $data',
+        ApiLoadMore(:final data) => 'loading more: $data',
       };
       expect(result, 'success: 42');
     });

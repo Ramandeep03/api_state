@@ -11,8 +11,9 @@ Built for Dart 3+ with compile-time exhaustive pattern matching. Works with any 
 | Initial | `ApiInitial` | No action taken yet |
 | Loading | `ApiLoading` | API call in progress |
 | Success | `ApiSuccess<T>` | Completed with data |
-| Failure | `ApiFailure<T>` | Failed with error |
+| Failure | `ApiFailure<T>` | Failed with error, optionally preserving data |
 | Refresh | `ApiRefresh<T>` | Re-fetching while showing existing data |
+| Load more | `ApiLoadMore<T>` | Fetching another page while showing existing data |
 
 ## Installation
 
@@ -64,8 +65,11 @@ Widget build(BuildContext context) {
     ApiInitial()              => const SizedBox.shrink(),
     ApiLoading()              => const CircularProgressIndicator(),
     ApiSuccess(:final data)   => UserList(users: data),
+    ApiFailure(:final error, :final data, hasData: true) =>
+      UserList(users: data!, loadMoreError: error),
     ApiFailure(:final error)  => ErrorView(message: error.message),
     ApiRefresh(:final data)   => UserList(users: data, refreshing: true),
+    ApiLoadMore(:final data)  => UserList(users: data, loadingMore: true),
   };
 }
 ```
@@ -80,6 +84,7 @@ final widget = usersState.when(
   success: (users) => UserList(users: users),
   failure: (error) => ErrorView(message: error.message),
   refresh: (users) => UserList(users: users, refreshing: true), // optional
+  loadMore: (users) => UserList(users: users, loadingMore: true), // optional
 );
 ```
 
@@ -111,12 +116,13 @@ usersState.isLoading;  // true if ApiLoading
 usersState.isSuccess;  // true if ApiSuccess
 usersState.isFailure;  // true if ApiFailure
 usersState.isRefresh;  // true if ApiRefresh
+usersState.isLoadMore; // true if ApiLoadMore
 
-usersState.hasData;    // true if success or refresh
-usersState.hasError;   // true if failure
+usersState.hasData;    // true for data states and ApiFailure when data was retained
+usersState.hasError;   // true if ApiFailure
 
-usersState.data;       // T? — data from success/refresh, null otherwise
-usersState.error;      // Failure? — error from failure, null otherwise
+usersState.data;       // T? — data from success/refresh/load-more or retained failure
+usersState.error;      // Failure? — error from failure states, null otherwise
 ```
 
 ## Transform Methods
@@ -144,11 +150,11 @@ final uiState = repoState.mapFailure(
 
 ### `whenData` — Callback for Any Data State
 
-Fires for both `success` and `refresh`:
+Fires for every state that carries data:
 
 ```dart
 usersState.whenData((users) => cache.save(users));
-// Returns null for initial/loading/failure
+// Returns null for initial/loading and failures without data
 ```
 
 ## State Transitions
@@ -170,6 +176,26 @@ Transition to refresh, preserving existing data. Falls back to `ApiLoading` if n
 usersState = usersState.toRefresh();
 // ApiSuccess(users) → ApiRefresh(users)
 // ApiInitial()      → ApiLoading() (no data to preserve)
+```
+
+### `toLoadMore()`
+
+Transition to load-more, preserving the current data. Falls back to `ApiLoading` if no data exists:
+
+```dart
+// When requesting the next page, keep the currently displayed list.
+usersState = usersState.toLoadMore();
+// ApiSuccess(users) → ApiLoadMore(users)
+// ApiInitial()      → ApiLoading() (no data to preserve)
+```
+
+If loading the next page fails, keep the current page and attach the error:
+
+```dart
+usersState = usersState.toLoadMoreFailure(
+  LoadMoreFailure('Could not load the next page'),
+);
+// ApiLoadMore(users) → ApiFailure(error, data: users)
 ```
 
 ## `ApiStatus.guard`
@@ -201,6 +227,10 @@ class ServerFailure extends Failure {
 
 class NetworkFailure extends Failure {
   const NetworkFailure([super.message = 'No internet connection']);
+}
+
+class LoadMoreFailure extends Failure {
+  const LoadMoreFailure(super.message);
 }
 
 class CacheFailure extends Failure {
@@ -256,8 +286,11 @@ BlocBuilder<UsersCubit, ApiStatus<List<User>>>(
     ApiInitial()              => const SizedBox.shrink(),
     ApiLoading()              => const CircularProgressIndicator(),
     ApiSuccess(:final data)   => UserList(users: data),
+    ApiFailure(:final error, :final data, hasData: true) =>
+      UserList(users: data!, loadMoreError: error),
     ApiFailure(:final error)  => ErrorView(message: error.message),
     ApiRefresh(:final data)   => UserList(users: data, refreshing: true),
+    ApiLoadMore(:final data)  => UserList(users: data, loadingMore: true),
   },
 )
 ```
@@ -268,10 +301,10 @@ BlocBuilder<UsersCubit, ApiStatus<List<User>>>(
 
 | Method / Getter | Return Type | Description |
 |---|---|---|
-| `isInitial`, `isLoading`, `isSuccess`, `isFailure`, `isRefresh` | `bool` | State checks |
+| `isInitial`, `isLoading`, `isSuccess`, `isFailure`, `isRefresh`, `isLoadMore` | `bool` | State checks |
 | `hasData`, `hasError` | `bool` | Data/error availability |
-| `data` | `T?` | Data from success/refresh |
-| `error` | `Failure?` | Error from failure |
+| `data` | `T?` | Data from success, refresh, load-more, or a retained-data failure |
+| `error` | `Failure?` | Error from failure states |
 | `when(...)` | `R` | Exhaustive pattern matching |
 | `whenOrNull(...)` | `R?` | Partial matching, returns null |
 | `maybeWhen(...)` | `R` | Partial matching with fallback |
@@ -280,4 +313,6 @@ BlocBuilder<UsersCubit, ApiStatus<List<User>>>(
 | `mapFailure(transform)` | `ApiStatus<T>` | Transform error type |
 | `toLoading()` | `ApiStatus<T>` | Transition to loading |
 | `toRefresh()` | `ApiStatus<T>` | Transition to refresh (preserves data) |
+| `toLoadMore()` | `ApiStatus<T>` | Transition to load more (preserves data) |
+| `toLoadMoreFailure(error)` | `ApiStatus<T>` | Return `ApiFailure` while preserving load-more data |
 | `ApiStatus.guard(action, onError:)` | `Future<ApiStatus<T>>` | Wrap async call |

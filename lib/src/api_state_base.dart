@@ -1,5 +1,7 @@
 import 'package:api_state/src/failure.dart';
 
+part 'api_status_states.dart';
+
 /// A generic sealed class representing the different states of an API call.
 ///
 /// Use Dart 3 pattern matching for compile-time exhaustive checks:
@@ -10,14 +12,16 @@ import 'package:api_state/src/failure.dart';
 ///   case ApiSuccess(:final data):   // ...
 ///   case ApiFailure(:final error):  // ...
 ///   case ApiRefresh(:final data):   // ...
+///   case ApiLoadMore(:final data):  // ...
 /// }
 /// ```
 sealed class ApiStatus<T> {
   const ApiStatus();
 
-  /// `true` if data is available (success or refresh).
+  /// `true` if data is available.
   bool get hasData => switch (this) {
-        ApiSuccess() || ApiRefresh() => true,
+        ApiSuccess() || ApiRefresh() || ApiLoadMore() => true,
+        ApiFailure(:final hasData) => hasData,
         _ => false,
       };
 
@@ -28,6 +32,8 @@ sealed class ApiStatus<T> {
   T? get data => switch (this) {
         ApiSuccess(:final data) => data,
         ApiRefresh(:final data) => data,
+        ApiLoadMore(:final data) => data,
+        ApiFailure(:final data, hasData: true) => data,
         _ => null,
       };
 
@@ -50,31 +56,39 @@ sealed class ApiStatus<T> {
   /// `true` if the state is success.
   bool get isSuccess => this is ApiSuccess<T>;
 
-  /// `true` if the state is failure.
+  /// `true` if the state contains a failure.
   bool get isFailure => this is ApiFailure<T>;
 
   /// `true` if the state is refresh.
   bool get isRefresh => this is ApiRefresh<T>;
+
+  /// `true` if another page is loading while existing data is preserved.
+  bool get isLoadMore => this is ApiLoadMore<T>;
 
   // -------------------------
   // TRANSFORM METHODS
   // -------------------------
 
   /// Returns a new [ApiStatus] with the data transformed by [transform].
-  /// Non-data states are passed through unchanged.
+  /// States without data are passed through unchanged.
   ApiStatus<R> map<R>(R Function(T data) transform) => switch (this) {
         ApiInitial() => const ApiInitial(),
         ApiLoading() => const ApiLoading(),
         ApiSuccess(:final data) => ApiSuccess(transform(data)),
-        ApiFailure(:final error) => ApiFailure(error),
+        ApiFailure(:final error, :final data, :final hasData) => hasData
+            ? ApiFailure(error, data: transform(data as T), hasData: true)
+            : ApiFailure(error),
         ApiRefresh(:final data) => ApiRefresh(transform(data)),
+        ApiLoadMore(:final data) => ApiLoadMore(transform(data)),
       };
 
   /// Returns a new [ApiStatus] with the error transformed by [transform].
   /// Non-failure states are passed through unchanged.
   ApiStatus<T> mapFailure(Failure Function(Failure error) transform) =>
       switch (this) {
-        ApiFailure(:final error) => ApiFailure(transform(error)),
+        ApiFailure(:final error, :final data, :final hasData) => hasData
+            ? ApiFailure(transform(error), data: data, hasData: true)
+            : ApiFailure(transform(error)),
         _ => this,
       };
 
@@ -91,18 +105,45 @@ sealed class ApiStatus<T> {
   ApiStatus<T> toRefresh() => switch (this) {
         ApiSuccess(:final data) => ApiRefresh(data),
         ApiRefresh(:final data) => ApiRefresh(data),
+        ApiLoadMore(:final data) => ApiRefresh(data),
+        ApiFailure(:final data, hasData: true) => ApiRefresh(data as T),
         _ => const ApiLoading(),
+      };
+
+  /// Transitions to [ApiLoadMore], preserving existing data.
+  ///
+  /// If the current state has no data, falls back to [ApiLoading].
+  ApiStatus<T> toLoadMore() => switch (this) {
+        ApiSuccess(:final data) => ApiLoadMore(data),
+        ApiRefresh(:final data) => ApiLoadMore(data),
+        ApiLoadMore(:final data) => ApiLoadMore(data),
+        ApiFailure(:final data, hasData: true) => ApiLoadMore(data as T),
+        _ => const ApiLoading(),
+      };
+
+  /// Transitions a load-more request to failure while retaining its data.
+  ///
+  /// If the current state has no data from a load-more operation, returns a
+  /// regular [ApiFailure] without data.
+  ApiStatus<T> toLoadMoreFailure(Failure error) => switch (this) {
+        ApiLoadMore(:final data) =>
+          ApiFailure(error, data: data, hasData: true),
+        ApiFailure(:final data, hasData: true) =>
+          ApiFailure(error, data: data, hasData: true),
+        _ => ApiFailure(error),
       };
 
   // -------------------------
   // DATA CALLBACK
   // -------------------------
 
-  /// Calls [callback] with data if the state carries data (success or refresh).
+  /// Calls [callback] with data if the state carries data.
   /// Returns the callback result or `null` if no data is available.
   R? whenData<R>(R Function(T data) callback) => switch (this) {
         ApiSuccess(:final data) => callback(data),
         ApiRefresh(:final data) => callback(data),
+        ApiLoadMore(:final data) => callback(data),
+        ApiFailure(:final data, hasData: true) => callback(data as T),
         _ => null,
       };
 
@@ -141,6 +182,7 @@ sealed class ApiStatus<T> {
     required R Function(T data) success,
     required R Function(Failure error) failure,
     R Function(T data)? refresh,
+    R Function(T data)? loadMore,
   }) =>
       switch (this) {
         ApiInitial() || ApiLoading() => initialOrLoading(),
@@ -148,6 +190,8 @@ sealed class ApiStatus<T> {
         ApiFailure(:final error) => failure(error),
         ApiRefresh(:final data) =>
           refresh?.call(data) ?? initialOrLoading(),
+        ApiLoadMore(:final data) =>
+          loadMore?.call(data) ?? initialOrLoading(),
       };
 
   /// Non-exhaustive pattern matching. Unhandled cases return `null`.
@@ -157,6 +201,7 @@ sealed class ApiStatus<T> {
     R Function(T data)? success,
     R Function(Failure error)? failure,
     R Function(T data)? refresh,
+    R Function(T data)? loadMore,
   }) =>
       switch (this) {
         ApiInitial() => initial?.call(),
@@ -164,6 +209,7 @@ sealed class ApiStatus<T> {
         ApiSuccess(:final data) => success?.call(data),
         ApiFailure(:final error) => failure?.call(error),
         ApiRefresh(:final data) => refresh?.call(data),
+        ApiLoadMore(:final data) => loadMore?.call(data),
       };
 
   /// Pattern matching with a fallback for unhandled cases.
@@ -173,6 +219,7 @@ sealed class ApiStatus<T> {
     R Function(T data)? success,
     R Function(Failure error)? failure,
     R Function(T data)? refresh,
+    R Function(T data)? loadMore,
     required R Function() orElse,
   }) =>
       switch (this) {
@@ -181,89 +228,6 @@ sealed class ApiStatus<T> {
         ApiSuccess(:final data) => success?.call(data) ?? orElse(),
         ApiFailure(:final error) => failure?.call(error) ?? orElse(),
         ApiRefresh(:final data) => refresh?.call(data) ?? orElse(),
+        ApiLoadMore(:final data) => loadMore?.call(data) ?? orElse(),
       };
-}
-
-/// Idle state - before anything has started.
-class ApiInitial<T> extends ApiStatus<T> {
-  const ApiInitial();
-
-  @override
-  String toString() => 'ApiInitial()';
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) || other is ApiInitial<T>;
-
-  @override
-  int get hashCode => runtimeType.hashCode;
-}
-
-/// Loading state - API request initiated.
-class ApiLoading<T> extends ApiStatus<T> {
-  const ApiLoading();
-
-  @override
-  String toString() => 'ApiLoading()';
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) || other is ApiLoading<T>;
-
-  @override
-  int get hashCode => runtimeType.hashCode;
-}
-
-/// Success state - API request completed with valid data.
-class ApiSuccess<T> extends ApiStatus<T> {
-  @override
-  final T data;
-
-  const ApiSuccess(this.data);
-
-  @override
-  String toString() => 'ApiSuccess(data: $data)';
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) || other is ApiSuccess<T> && data == other.data;
-
-  @override
-  int get hashCode => data.hashCode;
-}
-
-/// Failure state - API encountered an exception or error response.
-class ApiFailure<T> extends ApiStatus<T> {
-  @override
-  final Failure error;
-
-  const ApiFailure(this.error);
-
-  @override
-  String toString() => 'ApiFailure(error: $error)';
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) || other is ApiFailure<T> && error == other.error;
-
-  @override
-  int get hashCode => error.hashCode;
-}
-
-/// Refresh state - re-fetching data while preserving existing data.
-class ApiRefresh<T> extends ApiStatus<T> {
-  @override
-  final T data;
-
-  const ApiRefresh(this.data);
-
-  @override
-  String toString() => 'ApiRefresh(data: $data)';
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) || other is ApiRefresh<T> && data == other.data;
-
-  @override
-  int get hashCode => data.hashCode;
 }
